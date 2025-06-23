@@ -221,6 +221,185 @@ const transferAmount = ethers.parseUnits("1000000", 6); // 1M USDC
 await usdcToken.transfer(receiverAddress, transferAmount);
 ```
 
+## 🔬 **Observations: How Solana Native SDK Works for Token Approval and Transfer Logic**
+
+Based on the analysis of this codebase and the [Neon EVM Solana Native SDK documentation](https://neonevm.org/docs/composability/sdk_solana_native), here are comprehensive observations about how the Solana Native SDK operates for token approval and transfer logic:
+
+### **1. Core Architecture and Cross-Chain Bridge**
+
+#### **Dual-Layer Transaction System**
+The Solana Native SDK implements a sophisticated dual-layer transaction system:
+- **Solana Layer**: Handles transaction signing and scheduling using Solana wallets
+- **Neon EVM Layer**: Executes the actual token operations on Neon EVM
+
+#### **Key Components Identified:**
+- **NeonProxyRpcApi**: Manages communication between Solana and Neon EVM
+- **Scheduled Transactions**: Enables cross-chain transaction orchestration
+- **Balance Account Management**: Handles Neon EVM account initialization on Solana
+
+### **2. Token Approval Logic Analysis**
+
+#### **Approval Flow Implementation:**
+```javascript
+// 1. Initialize Solana user and get Neon wallet
+const {chainId, solanaUser} = await proxyApi.init(keypair);
+
+// 2. Check current approval status
+const currentApproval = await USDC.allowance(solanaUser.neonWallet, solanaUser.neonWallet);
+
+// 3. Create approval transaction data
+const transactionData = {
+    from: solanaUser.neonWallet,
+    to: USDC_ADDRESS,
+    data: USDC.interface.encodeFunctionData("approve", [spender, amount])
+};
+
+// 4. Estimate gas and create scheduled transaction
+const transactionGas = await proxyApi.estimateScheduledTransactionGas({
+    solanaPayer: solanaUser.publicKey,
+    transactions: [transactionData]
+});
+```
+
+#### **Critical Observations:**
+- **Self-Approval Pattern**: The implementation uses `solanaUser.neonWallet` as both owner and spender, enabling self-approval for delegated spending
+- **Timestamp-Based Approval**: Uses `Math.floor(Date.now() / 1000)` for approval amount, creating time-based approval windows
+- **Cross-Chain Approval State**: Approval state is maintained on Neon EVM while being initiated from Solana
+
+### **3. Token Transfer Logic Analysis**
+
+#### **Transfer Flow Implementation:**
+```javascript
+// 1. ATA Management and Validation
+const solanaUserUSDC_ATA = await getAssociatedTokenAddress(
+    new web3.PublicKey(ethers.encodeBase58(usdcTokenMint)),
+    solanaUser.publicKey,
+    true
+);
+
+// 2. Automatic ATA Creation
+if (e instanceof TokenAccountNotFoundError) {
+    const ataIx = createAssociatedTokenAccountInstruction(
+        keypair.publicKey,             // payer
+        solanaUserUSDC_ATA,            // associated token address
+        keypair.publicKey,             // owner
+        new web3.PublicKey(ethers.encodeBase58(usdcTokenMint)) // USDC mint
+    );
+}
+
+// 3. Delegation Check and Approval
+if (ataInfo.delegate == null || ataInfo.delegate.toBase58() != usdcContractPDA.toBase58()) {
+    scheduledTransaction.instructions.unshift(
+        createApproveInstruction(
+            solanaUserUSDC_ATA,
+            usdcContractPDA, // delegate to contract PDA
+            solanaUser.publicKey,
+            '18446744073709551615' // max uint64 approval
+        )
+    );
+}
+```
+
+#### **Critical Observations:**
+- **PDA-Based Delegation**: The USDC contract PDA (`usdcContractPDA`) acts as the delegate for spending from Solana ATAs
+- **Automatic ATA Management**: The SDK automatically creates missing Associated Token Accounts
+- **Max Approval Strategy**: Uses maximum uint64 approval (`18446744073709551615`) for delegation, enabling unlimited spending
+
+### **4. Scheduled Transaction Mechanism**
+
+#### **Transaction Lifecycle:**
+1. **Initialization**: Solana wallet connects and Neon EVM account is derived
+2. **Gas Estimation**: Cross-chain gas estimation for Neon EVM operations
+3. **Transaction Creation**: Scheduled transaction with Solana instructions
+4. **Balance Account Setup**: Automatic creation of Neon EVM balance accounts
+5. **Transaction Signing**: Solana wallet signs the scheduled transaction
+6. **Execution**: Transaction executes on Neon EVM with Solana confirmation
+
+#### **Key Technical Insights:**
+- **Nonce Management**: Each transaction uses a unique nonce derived from the Neon wallet
+- **Instruction Batching**: Multiple Solana instructions can be batched in a single scheduled transaction
+- **Cross-Chain State Synchronization**: Balance and approval states are synchronized between Solana and Neon EVM
+
+### **5. Composability and Modular Design**
+
+#### **Library Architecture:**
+The project implements a modular composability system:
+- **LibSPLTokenProgram**: Handles core SPL token operations (transfer, mint, approve)
+- **LibAssociatedTokenProgram**: Manages ATA creation and management
+- **LibSystemProgram**: Handles Solana system operations
+- **CallSolanaHelperLib**: Provides utility functions for Solana instruction formatting
+
+#### **Instruction Formatting:**
+```solidity
+// Example: Transfer instruction formatting
+function formatTransferInstruction(
+    bytes32 senderATA,
+    bytes32 recipientATA,
+    bytes32 sender,
+    uint64 amount
+) internal pure returns (
+    bytes32[] memory accounts,
+    bool[] memory isSigner,
+    bool[] memory isWritable,
+    bytes memory data
+) {
+    // Instruction variant 0x03 for transfer
+    data = abi.encodePacked(
+        bytes1(0x03),
+        bytes8(amountLE) // Little-endian amount
+    );
+}
+```
+
+### **6. Security and Error Handling**
+
+#### **Security Mechanisms:**
+- **Authentication**: Solana keypair authentication for transaction signing
+- **Authorization**: PDA-based delegation for token spending
+- **Validation**: Balance and account existence checks before operations
+- **Error Recovery**: Graceful handling of missing accounts and failed operations
+
+#### **Error Handling Patterns:**
+- **TokenAccountNotFoundError**: Automatic ATA creation when missing
+- **Balance Validation**: Checks for sufficient SOL and token balances
+- **Delegation Validation**: Ensures proper delegation before transfers
+
+### **7. Performance and Optimization**
+
+#### **Gas Optimization:**
+- **Batch Instructions**: Multiple operations in single scheduled transaction
+- **Efficient Gas Estimation**: Cross-chain gas estimation for cost optimization
+- **Minimal Cross-Chain Calls**: Reduced communication overhead
+
+#### **State Management:**
+- **Cached Account Info**: Reuse of account information across operations
+- **Optimistic Updates**: Immediate state updates with rollback capabilities
+- **Efficient Balance Tracking**: Real-time balance synchronization
+
+### **8. Integration Patterns**
+
+#### **ERC20ForSPL Integration:**
+- **Dual Interface**: Supports both ERC20 and SPL token interfaces
+- **Cross-Chain Compatibility**: Seamless interaction between Ethereum and Solana ecosystems
+- **Event Emission**: Proper event emission for both ERC20 and SPL operations
+
+#### **Wallet Integration:**
+- **Solana Wallet Support**: Native Solana wallet integration (Phantom, etc.)
+- **Keypair Management**: Secure keypair handling with bs58 encoding
+- **Transaction Signing**: Native Solana transaction signing with Neon EVM execution
+
+### **9. Development and Testing Insights**
+
+#### **Development Workflow:**
+- **Environment Setup**: Proper configuration of both Solana and Neon EVM environments
+- **Dependency Management**: Careful version management of cross-chain dependencies
+- **Testing Strategy**: Comprehensive testing of both approval and transfer flows
+
+#### **Debugging and Monitoring:**
+- **Transaction Tracking**: Both Solana and Neon EVM transaction monitoring
+- **Balance Verification**: Cross-chain balance verification
+- **Error Diagnostics**: Detailed error reporting and debugging information
+
 ## 📄 License
 MIT License
 
@@ -229,6 +408,7 @@ MIT License
 - [Solana Documentation](https://docs.solana.com/)
 - [SPL Token Program](https://spl.solana.com/token)
 - [ERC20ForSPL Documentation](https://docs.neonfoundation.io/docs/developing/contracts/erc20forspl)
+- [Neon EVM Solana Native SDK](https://neonevm.org/docs/composability/sdk_solana_native)
 
 ## 🤝 Contributing
 Contributions are welcome! Please feel free to submit a Pull Request.
