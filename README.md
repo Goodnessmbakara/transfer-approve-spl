@@ -223,7 +223,7 @@ await usdcToken.transfer(receiverAddress, transferAmount);
 
 ## 🔬 **Observations: How Solana Native SDK Works for Token Approval and Transfer Logic**
 
-Based on the analysis of this codebase and the [Neon EVM Solana Native SDK documentation](https://neonevm.org/docs/composability/sdk_solana_native), here are comprehensive observations about how the Solana Native SDK operates for token approval and transfer logic:
+Based on the understanding of this codebase and the [Neon EVM Solana Native SDK documentation](https://neonevm.org/docs/composability/sdk_solana_native), below are comprehensive observations about how the Solana Native SDK operates for token approval and transfer logic:
 
 ### **1. Core Architecture and Cross-Chain Bridge**
 
